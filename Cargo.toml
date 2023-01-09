@@ -1,0 +1,18 @@
+[package]
+name = "blues"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+nbd = { git = "https://github.com/tchajed/rust-nbd" }
+internet-checksum = "0.2.1"
+serde_json = "1.0.91"
+env_logger = "0.10.0"
+num_cpus = "1.15.0"
+serde = { version = "1.0.152", features = ["derive"] }
+tokio = { version = "1.24.1", features = ["full"] }
+clap = { version = "4.0.32", features = ["derive"] }
+icmp = "0.3.0"
+rand = "0.8.5"
+log = "0.4.17"
