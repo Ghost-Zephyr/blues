@@ -1,3 +1,4 @@
+#[allow(clippy::upper_case_acronyms)]
 use std::{
     io, net::IpAddr,
     time::Duration,

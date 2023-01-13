@@ -1,9 +1,6 @@
 use std::{
-    sync::{Mutex, Arc},
-    time::Duration,
-    thread::sleep,
-    net::IpAddr,
-    vec::Vec, io};
+    sync::{Mutex, Arc}, time::Duration, thread::sleep,
+    net::{Ipv4Addr, IpAddr}, vec::Vec, io};
 
 use log::{trace, warn, error};
 use tokio::{
@@ -12,13 +9,8 @@ use tokio::{
 use nbd::server::Blocks;
 use icmp::IcmpSocket;
 use crate::{
-    ICMP_PACKET, IPStore,
-    pinger::connect,
-    checksum,
-    get_rt};
-
-const SIZE: usize = 64; // Bits of data in each ping
-static WORD_COUNT: usize = SIZE / 8; // Number of 16-bit words in each ping
+    ICMP_PACKET, BYTE_COUNT, PACKET_SIZE, SIZE,
+    IPStore, checksum, connect, get_rt};
 
 type Message = (usize, usize, Vec<u8>); // Message type for the write channel
 
@@ -56,7 +48,7 @@ impl PingStore {
             let offset = store.pings.lock().unwrap().len() * 7;
             let mut ping = Ping::new();
             for j in 0..7 {
-                ping.add(ips.dsts[offset + j].ip);
+                ping.add(IpAddr::V4(ips.dsts[offset + j].ip));
             }
             store.pings.lock().unwrap().push(ping);
             store.size += 1;
@@ -124,7 +116,7 @@ impl PingStore {
 
 impl Blocks for PingStore {
     fn read_at(&self, buf: &mut [u8], off: u64) -> io::Result<()> {
-        let addr = (off as usize).div_floor(WORD_COUNT);
+        let addr = (off as usize).div_floor(BYTE_COUNT);
         let buflen = buf.len();
         let mut res = vec![];
         for pingspan in 0..buflen.div_ceil(SIZE) {
@@ -136,10 +128,10 @@ impl Blocks for PingStore {
     }
 
     fn write_at(&self, buf: &[u8], off: u64) -> io::Result<()> {
-        let addr = (off as usize).div_ceil(WORD_COUNT);
+        let addr = (off as usize).div_ceil(BYTE_COUNT);
         let buflen = buf.len();
         get_rt("channel pusher", num_cpus::get().div_floor(3) + 1).block_on(
-            self.write(buf, addr, (addr * WORD_COUNT) - off as usize, buflen))?;
+            self.write(buf, addr, (addr * BYTE_COUNT) - off as usize, buflen))?;
         Ok(())
     }
 

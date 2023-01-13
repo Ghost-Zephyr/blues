@@ -6,40 +6,33 @@ use std::{
 use log::{trace, debug, info};
 use icmp::IcmpSocket;
 use rand::random;
-use crate::checksum;
-
-pub static mut TIMEOUT: Option<Duration> = None;
-
-pub static ICMP_PACKET: [u8; 8] = [
-    8, 0, // 8 Echo ping request, code 0
-    0, 0, // Index 2 and 3 are for ICMP checksum
-    0xde, 0xad, // Identifier
-    0, 1, // Sequence numbers
-];
+use crate::{
+    ICMP_PACKET, PACKET_SIZE,
+    TIMEOUT, SIZE, checksum};
 
 pub struct PingResponse {
     pub round_trip: usize,
     pub corrupt: bool,
     pub small: bool,
-    pub data: [u8; 84],
+    pub data: [u8; PACKET_SIZE],
 }
 
 pub type PingResult = Result<PingResponse, io::Error>;
 
 pub struct Pinger {
-    pub data: [u8; 64],
+    pub data: [u8; SIZE],
     pub seq: [u8; 2],
 }
 
 impl Pinger {
     pub fn new() -> Self {
         Self {
-            data: [0; 64],
+            data: [0; SIZE],
             seq: [1, 0],
         }
     }
 
-    pub fn data(mut self, data: [u8; 64]) -> Self {
+    pub fn data(mut self, data: [u8; SIZE]) -> Self {
         self.data = data;
         self
     }
@@ -68,7 +61,7 @@ impl Pinger {
         };
         self.inc_seq();
 
-        let mut response: [u8; 64 + 20] = [0; 64 + 20];
+        let mut response: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
 
         match socket.recv(&mut response) {
             Err(err) => {
@@ -78,7 +71,7 @@ impl Pinger {
 
             Ok(size) => {
                 let mut result = PingResponse::new(response, start.elapsed().as_millis() as usize);
-                if size != 84 {
+                if size != PACKET_SIZE {
                     debug!("Didn't revice full response from \"{}\"", ip);
                     trace!("Response in question: {:?}", response);
                     result.corrupt = true;
@@ -141,7 +134,7 @@ pub fn rand_ip() -> IpAddr {
 }
 
 impl PingResponse {
-    fn new(data: [u8; 84], round_trip: usize) -> Self {
+    fn new(data: [u8; PACKET_SIZE], round_trip: usize) -> Self {
         Self {
             round_trip,
             corrupt: false,
@@ -153,7 +146,7 @@ impl PingResponse {
 
 impl Default for PingResponse {
     fn default() -> Self {
-        Self::new([0; 84], 0)
+        Self::new([0; PACKET_SIZE], 0)
     }
 }
 

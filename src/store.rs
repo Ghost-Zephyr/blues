@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     io::{Write, Read},
     str::from_utf8,
-    net::IpAddr,
+    net::Ipv4Addr,
     vec::Vec};
 
 use log::{trace, debug, error};
@@ -14,7 +14,7 @@ use crate::{
 #[derive(Deserialize, Serialize)]
 pub struct IPStore {
     pub dsts: Vec<Destination>,
-    pub dead: Vec<IpAddr>,
+    pub dead: Vec<Ipv4Addr>,
 }
 
 impl IPStore {
