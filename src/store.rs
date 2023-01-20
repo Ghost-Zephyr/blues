@@ -23,8 +23,7 @@ impl IPStore {
     }
 
     pub fn from_scanner(scanner: &Scanner) -> Self {
-//        Self { dsts: scanner.dsts.clone(), dead: scanner.dead.clone() }
-        Self { dsts: scanner.dsts.clone(), dead: vec![] }
+        Self { dsts: scanner.dsts.clone(), dead: scanner.dead.clone() }
     }
 
     pub fn save(&self, file_name: &str) {

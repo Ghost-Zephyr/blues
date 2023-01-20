@@ -23,6 +23,8 @@ pub const ICMP_PACKET: [u8; 8] = [
 
 pub const SIZE: usize = 64; // Bytes of echo data in each ping
 pub const PACKET_SIZE: usize = SIZE + 16; // Echo data size plus rest of ICMP packet
+// Echo response size, these have got some extra data cause of the ICMP socket lib
+pub const RESPONSE_SIZE: usize = PACKET_SIZE + 12;
 pub const BYTE_COUNT: usize = SIZE / 8;
 
 pub static mut TIMEOUT: Option<std::time::Duration> = None;

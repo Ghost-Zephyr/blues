@@ -6,7 +6,7 @@ SU := doas
 .PHONY: run debug release setcap
 
 run: debug setcap
-	target/debug/blues -t 1 recon -ro 3000 -p 1 -t 150 -l 1
+	target/debug/blues -t 6 recon -ro 3000 -p 1 -t 150 -l 1
 
 nbd: debug setcap
 	target/debug/blues nbd

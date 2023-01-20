@@ -12,6 +12,7 @@ use icmp::IcmpSocket;
 use tokio::{task, };
 
 use crate::{
+    RESPONSE_SIZE,
     ICMP_PACKET, PACKET_SIZE, SIZE,
     IPStore, checksum, connect,
     rand_ip};
@@ -63,8 +64,8 @@ impl Scanner {
 
     #[inline]
     fn next_ip(&mut self) -> Ipv4Addr {
-//        let mut ip = rand_ip();
-        let mut ip = Ipv4Addr::new(10, 0, 0, 138);
+        let mut ip = rand_ip();
+//        let mut ip = Ipv4Addr::new(192, 168, 88, 1);
         while self.scanned(&ip) {
             ip = rand_ip(); }
         ip
@@ -79,11 +80,11 @@ impl Scanner {
     }
 
     pub async fn mass_scan(&mut self, throttle: usize, parallel: usize, limit: usize, rand: bool) {
+        let (tx, rx) = mpsc::channel();
+        let listner = task::spawn(listner(rx));
         info!("Starting mass scan with a limit of {} and {} to randomized IP order!", limit, rand);
         let duration = Duration::from_millis(throttle as u64);
         let mut futs: Vec<task::JoinHandle<()>> = vec![];
-        let (tx, rx) = mpsc::channel();
-        let listner = task::spawn(listner(rx));
 
         for _ in 0..limit {
             if futs.len() >= parallel {
@@ -94,11 +95,14 @@ impl Scanner {
             self.timings.lock().unwrap().insert(ip, Instant::now());
             sleep(duration);
         }
+        info!("Done pinging");
         while !futs.is_empty() { pop_futs(&mut futs).await; }
         if let Err(err) = tx.send(()) {
-            panic!("Error sending exit signal to the listner thread: {err:?}");
+            trace!("Error sending exit signal to the listner thread: {err:#?}");
         };
+        drop(tx);
         let pings = listner.await.unwrap();
+        info!("Handling responeses");
         for ping in pings {
             if ping.corrupt || ping.small {
                 self.dead.push(ping.ip);
@@ -107,6 +111,7 @@ impl Scanner {
             let start = match timings.get(&ping.ip) {
                 None => {
                     error!("No timing found for IP: {}, assuming it's dead!", ping.ip);
+                    self.dead.push(ping.ip);
                     continue
                 },
                 Some(start) => *start,
@@ -127,7 +132,7 @@ async fn ping(ip: Ipv4Addr, data: &[u8]) {
     trace!("Scanning IP \"{ip}\"");
     let mut pack = ICMP_PACKET.to_vec();
 
-    pack[3..7].copy_from_slice(&ip.octets());
+    pack[4..8].copy_from_slice(&ip.octets());
     pack.append(&mut data.to_vec());
 
     let checksum = checksum(&pack);
@@ -140,21 +145,22 @@ async fn ping(ip: Ipv4Addr, data: &[u8]) {
         Ok(size) => if size != pack.len() { debug!("Sent {size} bytes of {} bytes to {ip}", pack.len()) },
         Err(err) => debug!("Unable to ping IP {ip}: {err:?}"),
     }
-    trace!("Ping packet sent to IP \"{ip}\"");
+    debug!("Ping packet sent to IP \"{ip}\"");
 }
 
 async fn listner(chan: mpsc::Receiver<()>) -> Vec<PingResponse> {
-    trace!("Listner started");
     let socket = match IcmpSocket::connect(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))) {
         Err(err) => panic!("Unable to open listening socket: {err:?}"),
         Ok(sock) => sock,
     };
+    socket.set_read_timeout(Some(Duration::from_secs(1)));
     let mut handles = vec![];
+    info!("Listner started");
     loop {
-        let mut response: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
+        let mut response: [u8; RESPONSE_SIZE] = [0; RESPONSE_SIZE];
         match socket.recv(&mut response) {
             Ok(size) => handles.push(task::spawn(handler(response, size))),
-            Err(err) => info!("Error reading a ping reply: {err:?}"),
+            Err(err) => trace!("Error reading a ping reply: {err:?}"),
         }
         match chan.try_recv() {
             Err(err) => match err {
@@ -167,7 +173,7 @@ async fn listner(chan: mpsc::Receiver<()>) -> Vec<PingResponse> {
             Ok(_) => break,
         }
     }
-    info!("Listner stopped");
+    debug!("Listner stopped");
     let mut pings = vec![];
     for handle in handles {
         match handle.await {
@@ -180,10 +186,10 @@ async fn listner(chan: mpsc::Receiver<()>) -> Vec<PingResponse> {
     pings
 }
 
-async fn handler(res: [u8; PACKET_SIZE], size: usize) -> PingResponse {
-    let data = res[PACKET_SIZE - SIZE..PACKET_SIZE].to_vec();
-    let ip = Ipv4Addr::new(res[4], res[5], res[6], res[7]);
-    trace!("Handling response from \"{ip}\"");
+async fn handler(res: [u8; RESPONSE_SIZE], size: usize) -> PingResponse {
+    let data = res[28..].to_vec();
+    let ip = Ipv4Addr::new(res[24], res[25], res[26], res[27]);
+    info!("Handling response from \"{ip}\"");
     let mut corrupt = false;
     let small = false;
 //    if size != { error!(); }
