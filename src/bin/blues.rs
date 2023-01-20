@@ -14,6 +14,7 @@ use log::{trace, debug, info, error};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Max worker threads to use for multi threaded operations
+    /// Minimum three during scanning
     #[arg(short, long, value_parser, default_value_t = num_cpus::get())]
     threads: usize,
 
@@ -76,8 +77,13 @@ fn main() -> io::Result<()> {
             debug!("Mode is Scan/Recon");
             unsafe { TIMEOUT = Some(Duration::from_millis(timeout)) };
 
+            let threads = if args.threads > 3 { args.threads } else {
+                info!("Args.threads is < 3, setting it to three, the required minimum for scanning");
+                3
+            };
+
             let mut scanner = Scanner::load(&args.file);
-            get_rt("blues Scanner worker", args.threads).block_on(
+            get_rt("blues Scanner worker", threads).block_on(
                 scanner.mass_scan(throttle, parallel, limit, rand));
 
             info!("Saving to file: {}", args.file);

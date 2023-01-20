@@ -1,7 +1,9 @@
 use std::{
+    collections::HashMap,
+    sync::{mpsc, Mutex, Arc},
     time::{Duration, Instant},
     net::{Ipv4Addr, IpAddr},
-    thread::sleep, io,
+    thread::sleep, //io,
     vec::Vec};
 
 use serde::{Deserialize, Serialize};
@@ -18,31 +20,37 @@ static PROBE: [u8; SIZE] = [0x66; SIZE];
 
 #[derive(Clone)]
 pub struct Scanner {
+    timings: Arc<Mutex<HashMap<Ipv4Addr, Instant>>>,
+//    scanned: Arc<Mutex<Vec<Ipv4Addr>>>,
     pub dsts: Vec<Destination>,
     pub dead: Vec<Ipv4Addr>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Destination {
-    pub round_trip: usize, // Round trip in ms
+    pub round_trip: Duration,
     pub small: bool,
     pub ip: Ipv4Addr,
 }
 
 struct PingResponse {
-    pub round_trip: usize,
+    pub finish: Instant,
+//    pub data: Vec<u8>,
     pub corrupt: bool,
+    pub ip: Ipv4Addr,
     pub small: bool,
-    pub data: [u8; PACKET_SIZE],
 }
 
-pub type PingResult = Result<PingResponse, io::Error>;
+//pub type PingResult = Result<PingResponse, io::Error>;
 pub type ScanResult = Result<Destination, Ipv4Addr>;
 
 impl Scanner {
     pub fn new() -> Self {
         debug!("Initializing a blues::Scanner");
-        Self { dsts: vec![], dead: vec![] }
+        Self {
+            timings: Arc::new(Mutex::new(HashMap::new())),
+            dsts: vec![], dead: vec![]
+        }
     }
 
     pub fn load(file: &str) -> Self {
@@ -54,9 +62,9 @@ impl Scanner {
     }
 
     #[inline]
-    fn next_ip(&self) -> Ipv4Addr {
-        let mut ip = rand_ip();
-//        let mut ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 138));
+    fn next_ip(&mut self) -> Ipv4Addr {
+//        let mut ip = rand_ip();
+        let mut ip = Ipv4Addr::new(10, 0, 0, 138);
         while self.scanned(&ip) {
             ip = rand_ip(); }
         ip
@@ -64,13 +72,8 @@ impl Scanner {
 
     #[inline]
     fn scanned(&self, ip: &Ipv4Addr) -> bool {
-        for dead in &self.dead {
-            if ip == dead { return true; }
-        }
-        for dst in &self.dsts {
-            if ip == &dst.ip {
-                return true;
-            }
+         for scanned in self.timings.lock().unwrap().keys() {
+            if *ip == *scanned { return true; }
         }
         false
     }
@@ -79,29 +82,52 @@ impl Scanner {
         info!("Starting mass scan with a limit of {} and {} to randomized IP order!", limit, rand);
         let duration = Duration::from_millis(throttle as u64);
         let mut futs: Vec<task::JoinHandle<()>> = vec![];
-        let listner = task::spawn(listner());
+        let (tx, rx) = mpsc::channel();
+        let listner = task::spawn(listner(rx));
 
-        for _i in 0..limit {
+        for _ in 0..limit {
             if futs.len() >= parallel {
                 pop_futs(&mut futs).await;
             }
-            futs.push(task::spawn(ping(self.next_ip(), &PROBE)));
+            let ip = self.next_ip();
+            futs.push(task::spawn(ping(ip, &PROBE)));
+            self.timings.lock().unwrap().insert(ip, Instant::now());
             sleep(duration);
         }
         while !futs.is_empty() { pop_futs(&mut futs).await; }
-        listner.abort();
+        if let Err(err) = tx.send(()) {
+            panic!("Error sending exit signal to the listner thread: {err:?}");
+        };
+        let pings = listner.await.unwrap();
+        for ping in pings {
+            if ping.corrupt || ping.small {
+                self.dead.push(ping.ip);
+            }
+            let timings = self.timings.lock().unwrap();
+            let start = match timings.get(&ping.ip) {
+                None => {
+                    error!("No timing found for IP: {}, assuming it's dead!", ping.ip);
+                    continue
+                },
+                Some(start) => *start,
+            };
+            self.dsts.push(Destination {
+                round_trip: ping.finish.duration_since(start),
+                small: ping.small, ip: ping.ip
+            });
+        }
     }
 }
 
 async fn pop_futs(futs: &mut Vec<task::JoinHandle<()>>) {
-    futs.pop().expect("Unable to pop of futures vec during mass_scan()!").await;
+    futs.pop().expect("Unable to pop of futures vec during mass_scan()!").await.unwrap();
 }
 
 async fn ping(ip: Ipv4Addr, data: &[u8]) {
     trace!("Scanning IP \"{ip}\"");
     let mut pack = ICMP_PACKET.to_vec();
 
-    pack[4..7].copy_from_slice(&ip.octets());
+    pack[3..7].copy_from_slice(&ip.octets());
     pack.append(&mut data.to_vec());
 
     let checksum = checksum(&pack);
@@ -109,15 +135,16 @@ async fn ping(ip: Ipv4Addr, data: &[u8]) {
     pack[3] = checksum[1];
 
     let mut socket = connect(IpAddr::V4(ip));
-    let start = Instant::now();
 
     match socket.send(&pack) {
         Ok(size) => if size != pack.len() { debug!("Sent {size} bytes of {} bytes to {ip}", pack.len()) },
         Err(err) => debug!("Unable to ping IP {ip}: {err:?}"),
     }
+    trace!("Ping packet sent to IP \"{ip}\"");
 }
 
-async fn listner() -> ! {
+async fn listner(chan: mpsc::Receiver<()>) -> Vec<PingResponse> {
+    trace!("Listner started");
     let socket = match IcmpSocket::connect(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))) {
         Err(err) => panic!("Unable to open listening socket: {err:?}"),
         Ok(sock) => sock,
@@ -129,11 +156,45 @@ async fn listner() -> ! {
             Ok(size) => handles.push(task::spawn(handler(response, size))),
             Err(err) => info!("Error reading a ping reply: {err:?}"),
         }
+        match chan.try_recv() {
+            Err(err) => match err {
+                mpsc::TryRecvError::Disconnected => {
+                    error!("Listner threads message queue is disconnected!");
+                    break
+                },
+                mpsc::TryRecvError::Empty => (),
+            }
+            Ok(_) => break,
+        }
     }
+    info!("Listner stopped");
+    let mut pings = vec![];
+    for handle in handles {
+        match handle.await {
+            Err(err) => error!("Awaiting future {err:?}"),
+            Ok(res) => {
+                pings.push(res);
+            },
+        };
+    }
+    pings
 }
 
-async fn handler(response: [u8; PACKET_SIZE], size: usize) {
-    todo!();
+async fn handler(res: [u8; PACKET_SIZE], size: usize) -> PingResponse {
+    let data = res[PACKET_SIZE - SIZE..PACKET_SIZE].to_vec();
+    let ip = Ipv4Addr::new(res[4], res[5], res[6], res[7]);
+    trace!("Handling response from \"{ip}\"");
+    let mut corrupt = false;
+    let small = false;
+//    if size != { error!(); }
+    if data != PROBE {
+        // TODO small?
+        corrupt = true;
+    }
+    PingResponse {
+        finish: Instant::now(), corrupt, small, ip
+        //, data
+    }
 }
 
 impl Default for Scanner {
